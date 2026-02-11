@@ -227,6 +227,14 @@ def run_scan(mode):
 
     res = res.sort_values("Score", ascending=False)
 
+    # =========================================================
+# EMOJI RANKING
+# =========================================================
+    emoji = ["🥇","🥈","🥉","🔥","⭐","✨"]
+    res["Rank"] = [emoji[i] if i < len(emoji) else "•" for i in range(len(res))]
+    
+    res = res[["Rank","Code","Entry","RSI","TP","SL","Score"]]
+
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=7)
     scan_time = now.strftime("%d %b %H:%M")
     
