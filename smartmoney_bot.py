@@ -227,20 +227,32 @@ def run_scan(mode):
 
     res = res.sort_values("Score", ascending=False)
 
-    emoji = ["🥇","🥈","🥉","🔥","⭐","✨"]
-    res["Rank"] = [emoji[i] if i < len(emoji) else "•" for i in range(len(res))]
-
-    res = res[["Rank","Code","Entry","RSI","TP","SL","Score"]]
-
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=7)
-
-    msg = f"<b>🚀 {mode.upper()} SMART MONEY</b>\n"
-    msg += f"🕒 {now.strftime('%d %b %H:%M')} WIB\n\n"
-
+    scan_time = now.strftime("%d %b %H:%M")
+    
+    title = "🚀 INTRADAY" if MODE == "intraday" else "📈 DAILY"
+    top = res.head(5)
+    
+    msg  = f"<b>{title} SMART MONEY</b>\n"
+    msg += f"🕒 {scan_time} WIB | {len(res)} kandidat\n\n"
+    
     table = ""
-    for r in res.head(5).itertuples():
-        table += f"{r.Rank} {r.Code}  {int(r.Entry)}  RSI:{int(r.RSI)}  TP:{int(r.TP)}  SL:{int(r.SL)}\n"
-
+    
+    # === pakai layout lebar ala format ke-2 ===
+    table += f"{'No':<3}{'Code':<6}{'Harga':>8}{'RSI':>6}{'SL':>8}{'TP':>8}{'Score':>8}\n"
+    table += "-" * 48 + "\n"
+    
+    for r in top.itertuples():
+        table += (
+            f"{r.Rank:<3}"          # <- ganti No jadi emoji
+            f"{r.Code:<6}"
+            f"{int(r.Entry):>8}"
+            f"{r.RSI:>6.0f}"
+            f"{int(r.SL):>8}"
+            f"{int(r.TP):>8}"
+            f"{r.Score:>8.1f}\n"
+        )
+    
     msg += f"<pre>{table}</pre>"
 
     send_telegram(msg)
