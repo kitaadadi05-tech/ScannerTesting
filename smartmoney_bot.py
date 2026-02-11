@@ -244,7 +244,12 @@ def run_scan(mode):
     msg += f"<pre>{table}</pre>"
 
     send_telegram(msg)
-
+    # bulatkan angka sebelum buat image
+    res["Entry"] = res["Entry"].round(0).astype(int)
+    res["TP"] = res["TP"].round(0).astype(int)
+    res["SL"] = res["SL"].round(0).astype(int)
+    res["RSI"] = res["RSI"].round(0).astype(int)
+    res["Score"] = res["Score"].round(0).astype(int)
     img = make_image(res)
     send_image(img)
 
