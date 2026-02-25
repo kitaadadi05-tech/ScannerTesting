@@ -324,3 +324,166 @@ if __name__ == "__main__":
 
     print("⏰ Scheduler aktif. Menunggu jam 15:05 WIB...")
     scheduler.start()
+
+
+
+# =========================================================
+# TELEGRAM DASHBOARD (ASYNC MODE)
+# =========================================================
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+
+scheduler_active = True
+last_result_message = "Belum ada hasil scan."
+tz = pytz.timezone("Asia/Jakarta")
+background_scheduler = BlockingScheduler(timezone=tz)
+
+
+# =============================
+# DASHBOARD UI
+# =============================
+def dashboard_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🔎 Scan Now", callback_data="scan_now")],
+        [InlineKeyboardButton("📊 Last Result", callback_data="last_result")],
+        [InlineKeyboardButton("📈 Aggressive Mode", callback_data="aggressive")],
+        [
+            InlineKeyboardButton("⏸ Pause Scheduler", callback_data="pause"),
+            InlineKeyboardButton("▶ Resume Scheduler", callback_data="resume"),
+        ],
+        [InlineKeyboardButton("⚙ Status", callback_data="status")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =============================
+# COMMAND HANDLER
+# =============================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🚀 MOMENTUM MOON DASHBOARD",
+        reply_markup=dashboard_keyboard()
+    )
+
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔎 Manual scan dimulai...")
+    await run_scan_async(update)
+
+
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global scheduler_active
+    scheduler_active = False
+    await update.message.reply_text("⏸ Scheduler paused.")
+
+
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global scheduler_active
+    scheduler_active = True
+    await update.message.reply_text("▶ Scheduler resumed.")
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "🟢 Active" if scheduler_active else "🔴 Paused"
+    await update.message.reply_text(f"Scheduler Status: {status}")
+
+
+# =============================
+# CALLBACK HANDLER
+# =============================
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "scan_now":
+        await query.edit_message_text("🔎 Manual scan dimulai...")
+        await run_scan_async(query)
+
+    elif query.data == "last_result":
+        await query.edit_message_text(last_result_message)
+
+    elif query.data == "pause":
+        global scheduler_active
+        scheduler_active = False
+        await query.edit_message_text("⏸ Scheduler paused.")
+
+    elif query.data == "resume":
+        scheduler_active = True
+        await query.edit_message_text("▶ Scheduler resumed.")
+
+    elif query.data == "status":
+        status = "🟢 Active" if scheduler_active else "🔴 Paused"
+        await query.edit_message_text(f"Scheduler Status: {status}")
+
+    elif query.data == "aggressive":
+        await query.edit_message_text("📈 Aggressive mode scan dimulai...")
+        await run_scan_async(query, aggressive=True)
+
+
+# =============================
+# ASYNC SCAN WRAPPER
+# =============================
+async def run_scan_async(target, aggressive=False):
+
+    global last_result_message
+
+    loop = context = None
+
+    MAX_WORKERS = 4
+
+    with mp.Pool(MAX_WORKERS) as pool:
+        results = pool.map(scan_stock, emiten.to_dict("records"))
+
+    results = [r for r in results if r]
+
+    if len(results) == 0:
+        message = "📉 Tidak ada saham memenuhi kriteria."
+    else:
+        df = pd.DataFrame(results)
+        df = df.sort_values(by="Moon Score", ascending=False).head(5)
+
+        message = "<b>🚀 MANUAL SCAN RESULT</b>\n\n<pre>"
+        message += "CODE | PRICE | CHG% | SCR\n"
+        message += "-" * 30 + "\n"
+
+        for _, row in df.iterrows():
+            message += (
+                f"{row['Code']} | "
+                f"{int(row['Last Price'])} | "
+                f"{row['Change (%)']}% | "
+                f"{row['Moon Score']}\n"
+            )
+
+        message += "</pre>"
+
+    last_result_message = message
+
+    if hasattr(target, "message"):
+        await target.message.reply_text(message, parse_mode="HTML")
+    else:
+        await target.edit_message_text(message, parse_mode="HTML")
+
+
+# =========================================================
+# MAIN BOT START
+# =========================================================
+
+if __name__ == "__main__":
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("pause", pause_command))
+    app.add_handler(CommandHandler("resume", resume_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    print("🤖 Dashboard bot running...")
+    app.run_polling()
