@@ -6,3 +6,4 @@ requests
 apscheduler
 pytz
 holidays
+python-telegram-bot==20.7
