@@ -579,7 +579,7 @@ async def run_scan_async(target, aggressive=False):
         df = pd.DataFrame(results)
         df = df.sort_values(by="Moon Score", ascending=False).head(5)
 
-       html = "<b>🚀MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
+    html = "<b>🚀MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
     html += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
     html += "-" * 55 + "\n"
 
