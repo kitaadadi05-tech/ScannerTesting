@@ -11,12 +11,17 @@ import multiprocessing as mp
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import pytz
 import holidays
 import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = create_engine(DATABASE_URL)
+Session = sessionmaker(bind=engine)
 # =========================================================
 # CONFIG
 # =========================================================
@@ -37,6 +42,27 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 emiten = pd.read_csv("emiten2.csv")
 emiten["code"] = emiten["code"].astype(str).str.strip()
 
+def init_db():
+    with engine.connect() as conn:
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id SERIAL PRIMARY KEY,
+            signal_date DATE,
+            code VARCHAR(10),
+            entry_price NUMERIC,
+            score INTEGER,
+            category VARCHAR(10),
+            mode VARCHAR(20),
+            volume BIGINT,
+            value_traded BIGINT,
+            atr_percent NUMERIC,
+            result VARCHAR(10),
+            return_pct NUMERIC,
+            evaluated BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """))
+        conn.commit()
 # =========================================================
 # SCORING FUNCTION
 # =========================================================
@@ -180,8 +206,9 @@ def scan_stock(row):
             "Moon Score": score,
             "Last Price": float(latest_close),
             "Change (%)": change_pct,
-            "Value Traded": int(value_traded),
-            "Volume": int(df["Volume"].iloc[-1]),
+            "Value_raw": int(value_traded),
+            "Volume_raw": int(df["Volume"].iloc[-1]),
+            "ATR_percent": float(round(atr_percent, 2)),
             "Explosive": explosive,
             "Continuation": continuation
         }
@@ -228,104 +255,219 @@ def is_market_open():
         return False
 
     return True
+
+def evaluate_signals():
+
+    print("📊 Evaluating signals...")
+
+    with engine.connect() as conn:
+
+        rows = conn.execute(text("""
+            SELECT * FROM signals
+            WHERE evaluated = FALSE
+        """)).fetchall()
+
+        for row in rows:
+
+            ticker = row.code + ".JK"
+
+            df = yf.download(
+                ticker,
+                period="5d",
+                interval="1d",
+                progress=False
+            )
+
+            if len(df) < 2:
+                continue
+
+            latest = df.iloc[-1]
+            high = latest["High"]
+            low = latest["Low"]
+
+            entry = float(row.entry_price)
+
+            tp_price = entry * 1.03
+            sl_price = entry * 0.97
+
+            result = "FLAT"
+            return_pct = 0
+
+            if high >= tp_price:
+                result = "WIN"
+                return_pct = 3
+            elif low <= sl_price:
+                result = "LOSS"
+                return_pct = -3
+
+            conn.execute(text("""
+                UPDATE signals
+                SET result = :result,
+                    return_pct = :return_pct,
+                    evaluated = TRUE
+                WHERE id = :id
+            """), {
+                "result": result,
+                "return_pct": return_pct,
+                "id": row.id
+            })
+
+        conn.commit()
+
+background_scheduler.add_job(
+    evaluate_signals,
+    trigger='cron',
+    hour=18,
+    minute=0
+)
+
+async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    with engine.connect() as conn:
+        stats = conn.execute(text("""
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) as win,
+                SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) as loss,
+                AVG(return_pct) as avg_return,
+                MAX(return_pct) as best,
+                MIN(return_pct) as worst
+            FROM signals
+            WHERE evaluated = TRUE
+        """)).fetchone()
+
+    if stats.total == 0:
+        await update.message.reply_text("Belum ada statistik.")
+        return
+
+    winrate = round((stats.win / stats.total) * 100, 2)
+
+    message = f"""
+📊 MOMENTUM STATISTICS
+
+Total Signal : {stats.total}
+Win          : {stats.win}
+Loss         : {stats.loss}
+Winrate      : {winrate}%
+
+Avg Return   : {round(stats.avg_return,2)}%
+Best         : {stats.best}%
+Worst        : {stats.worst}%
+"""
+
+    await update.message.reply_text(message)
 # =========================================================
 # MULTIPROCESS EXECUTION + SCHEDULER (RAILWAY READY)
 # =========================================================
 
+run_eod_scan() dengan ini:
+
 def run_eod_scan():
 
-    if not is_market_open():
-        print("📴 Market libur. Skip scanning.")
+    global scheduler_active
+
+    if not scheduler_active:
+        print("⏸ Scheduler paused.")
         return
 
-    print("🚀 Running EOD SCALPING Scan 15:05 WIB...")
+    if not is_market_open():
+        print("📴 Market libur.")
+        return
 
-    MAX_WORKERS = 4
+    print("🚀 Running EOD Scan...")
 
-    with mp.Pool(MAX_WORKERS) as pool:
+    with mp.Pool(4) as pool:
         results = pool.map(scan_stock, emiten.to_dict("records"))
 
     results = [r for r in results if r]
 
-    if len(results) == 0:
-        print("❌ Tidak ada saham memenuhi kriteria.")
+    if not results:
         send_telegram("📉 Tidak ada saham memenuhi kriteria hari ini.")
         return
 
-    result_df = pd.DataFrame(results)
+    df = pd.DataFrame(results)
 
+    # Categorize
     def categorize(row):
         if row["Explosive"]:
             return "🚀"
         elif row["Continuation"]:
             return "🔥"
-        else:
-            return "⚡"
+        return "⚡"
 
-    result_df["Category"] = result_df.apply(categorize, axis=1)
+    df["Category"] = df.apply(categorize, axis=1)
 
-    result_df = result_df.sort_values(
-        by="Moon Score",
-        ascending=False
-    ).head(5).reset_index(drop=True)
+    df = df.sort_values("Moon Score", ascending=False).head(5).reset_index(drop=True)
 
-    result_df.insert(0, "Rank", range(1, len(result_df) + 1))
+    # ================= SAVE TO DB =================
+    with engine.connect() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO signals (
+                    signal_date, code, entry_price, score,
+                    category, mode, volume, value_traded,
+                    atr_percent
+                ) VALUES (
+                    CURRENT_DATE, :code, :entry_price, :score,
+                    :category, :mode, :volume, :value_traded,
+                    :atr_percent
+                )
+            """), {
+                "code": row["Code"],
+                "entry_price": row["Last Price"],
+                "score": row["Moon Score"],
+                "category": row["Category"],
+                "mode": "normal",
+                "volume": row["Volume_raw"],
+                "value_traded": row["Value_raw"],
+                "atr_percent": row["ATR_percent"]
+            })
+        conn.commit()
 
-    # Format angka
-    result_df["Value Traded"] = result_df["Value Traded"].apply(format_number)
-    result_df["Volume"] = result_df["Volume"].apply(format_number)
+    # ================= TELEGRAM FORMAT =================
+    html = "<b>🚀 EOD SCALPING MOMENTUM</b>\n\n<pre>"
+    html += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
+    html += "-" * 55 + "\n"
 
-    print("\n===== TOP 5 SCALPING MOMENTUM =====\n")
-    print(result_df)
-
-    # =============================
-    # TELEGRAM ALERT
-    # =============================
-
-    html_message = "<b>🚀 EOD SCALPING MOMENTUM (15:05 WIB)</b>\n\n"
-    html_message += "<pre>"
-    html_message += "CODE | PRICE | CHG%  | VALUE | VOLUME | SCR | CTG\n"
-    html_message += "-" * 49 + "\n"
-
-    for _, row in result_df.iterrows():
-        html_message += (
+    for _, row in df.iterrows():
+        html += (
             f"{row['Code']:<4} | "
-            f"{int(row['Last Price']):>5} | "
+            f"{int(row['Last Price']):>6} | "
             f"{row['Change (%)']:>5.2f}% | "
-            f"{row['Value Traded']:>6} | "
-            f"{row['Volume']:>6} | "
+            f"{format_number(row['Value_raw']):>6} | "
+            f"{format_number(row['Volume_raw']):>6} | "
             f"{row['Moon Score']:>3} | "
             f"{row['Category']}\n"
         )
 
-    html_message += "</pre>\n"
-    html_message += "<b>Legend:</b>\n"
-    html_message += "🚀 = Strong Momentum\n"
-    html_message += "🔥 = Continuation T+1\n"
-    html_message += "⚡ = Early Momentum\n"
+    html += "</pre>\n"
+    html += "<b>Legend:</b>\n"
+    html += "🚀 = Strong Momentum\n"
+    html += "🔥 = Continuation T+1\n"
+    html += "⚡ = Early Momentum\n"
+    
+    send_telegram(html)
 
-    send_telegram(html_message)
 
-
-if __name__ == "__main__":
 
     tz = pytz.timezone("Asia/Jakarta")
 
-    scheduler = BlockingScheduler(timezone=tz)
+    print("⏰ Scheduler aktif. Menunggu jam 15:05 WIB...")
 
-    # Jalan setiap weekday jam 15:05 WIB
-    scheduler.add_job(
+    background_scheduler.add_job(
         run_eod_scan,
         trigger='cron',
         day_of_week='mon-fri',
         hour=15,
         minute=5
     )
-
-    print("⏰ Scheduler aktif. Menunggu jam 15:05 WIB...")
-    scheduler.start()
-
-
+    
+    background_scheduler.add_job(
+        evaluate_signals,
+        trigger='cron',
+        hour=18,
+        minute=0
+    )
 
 # =========================================================
 # TELEGRAM DASHBOARD (ASYNC MODE)
@@ -342,7 +484,11 @@ from telegram.ext import (
 scheduler_active = True
 last_result_message = "Belum ada hasil scan."
 tz = pytz.timezone("Asia/Jakarta")
-background_scheduler = BlockingScheduler(timezone=tz)
+
+background_scheduler = BackgroundScheduler(timezone=tz)
+background_scheduler.start()
+
+scheduler_active = True
 
 
 # =============================
@@ -353,6 +499,7 @@ def dashboard_keyboard():
         [InlineKeyboardButton("🔎 Scan Now", callback_data="scan_now")],
         [InlineKeyboardButton("📊 Last Result", callback_data="last_result")],
         [InlineKeyboardButton("📈 Aggressive Mode", callback_data="aggressive")],
+        [InlineKeyboardButton("📈 Statistik", callback_data="stats")],
         [
             InlineKeyboardButton("⏸ Pause Scheduler", callback_data="pause"),
             InlineKeyboardButton("▶ Resume Scheduler", callback_data="resume"),
@@ -416,7 +563,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "resume":
         scheduler_active = True
         await query.edit_message_text("▶ Scheduler resumed.")
-
+        
+    elif query.data == "stats":
+        await stats_handler(update, context)
+        
     elif query.data == "status":
         status = "🟢 Active" if scheduler_active else "🔴 Paused"
         await query.edit_message_text(f"Scheduler Status: {status}")
@@ -477,13 +627,13 @@ async def run_scan_async(target, aggressive=False):
 if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
+    app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("pause", pause_command))
     app.add_handler(CommandHandler("resume", resume_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(button_handler))
-
+    init_db()
     print("🤖 Dashboard bot running...")
     app.run_polling()
