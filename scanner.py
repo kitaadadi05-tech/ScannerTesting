@@ -586,7 +586,8 @@ def categorize(row):
         return "🔥"
     return "⚡"
 
-df["Category"] = df.apply(categorize, axis=1)
+    df["Category"] = df.apply(categorize, axis=1)
+
     html = "<b>🚀MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
     html += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
     html += "-" * 55 + "\n"
