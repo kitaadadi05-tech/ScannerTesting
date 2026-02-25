@@ -360,8 +360,6 @@ Worst        : {stats.worst}%
 # MULTIPROCESS EXECUTION + SCHEDULER (RAILWAY READY)
 # =========================================================
 
-run_eod_scan() dengan ini:
-
 def run_eod_scan():
 
     global scheduler_active
