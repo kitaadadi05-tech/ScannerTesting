@@ -1,0 +1,8 @@
+pandas
+numpy
+yfinance
+ta
+requests
+apscheduler
+pytz
+holidays
