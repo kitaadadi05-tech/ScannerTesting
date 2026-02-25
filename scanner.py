@@ -603,7 +603,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏸ Scheduler paused.")
 
     elif query.data == "resume":
-        global scheduler_active
         scheduler_active = True
         await query.edit_message_text("▶ Scheduler resumed.")
         
