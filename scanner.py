@@ -579,7 +579,7 @@ async def run_scan_async(target, aggressive=False):
         df = pd.DataFrame(results)
         df = df.sort_values(by="Moon Score", ascending=False).head(5)
         
- def categorize(row):
+def categorize(row):
     if row.get("Explosive"):
         return "🚀"
     elif row.get("Continuation"):
