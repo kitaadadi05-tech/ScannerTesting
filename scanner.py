@@ -146,6 +146,11 @@ def scan_stock(row):
 
     code = row["code"]
     ticker = code + ".JK"
+    try:
+        fast_info = yf.Ticker(ticker).fast_info
+        market_cap = fast_info.get("market_cap", 0)
+    except:
+        market_cap = 0
 
     try:
         df = yf.download(
@@ -155,105 +160,157 @@ def scan_stock(row):
             auto_adjust=False,
             progress=False
         )
-        df = df.reset_index(drop=True)
-        if df.empty or len(df) < 40:
+
+        if df.empty or len(df) < 30:
             return None
+        # Filter ARA (misal > 20%)
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
         score = calculate_moon_score(df)
 
+        # HARD FILTER LIQUIDITY
         avg_vol_20 = df["Volume"].rolling(20).mean().iloc[-2]
+
         if avg_vol_20 < MIN_AVG_VOLUME:
             return None
 
-        if score < 30:
+        if score < 40:
             return None
 
-        # =============================
-        # ANTI GORENGAN FILTER
-        # =============================
+        if market_cap is None or market_cap < MIN_MARKET_CAP:
+           return None
 
-        # 1️⃣ ATR filter
+        # =============================
+        # VOLATILITY FILTER (ATR %)
+        # =============================
         atr_indicator = AverageTrueRange(df["High"], df["Low"], df["Close"], 14)
         df["ATR"] = atr_indicator.average_true_range()
+
         latest_atr = df["ATR"].iloc[-1]
         latest_close = df["Close"].iloc[-1]
+
         atr_percent = (latest_atr / latest_close) * 100
 
         if atr_percent > MAX_DAILY_ATR_PERCENT:
             return None
-
-        # 2️⃣ Range abnormal (buang candle liar)
-        latest_range = df["High"].iloc[-1] - df["Low"].iloc[-1]
-        avg_range_20 = (df["High"] - df["Low"]).rolling(20).mean().iloc[-2]
-
-        if latest_range > avg_range_20 * 3:
-            return None
-
-        # 3️⃣ Nilai transaksi (wajib rame institusi)
-        value_traded = latest_close * df["Volume"].iloc[-1]
-        if value_traded < MIN_VALUE_TRADED:
-            return None
-
-        latest = df.iloc[-1]
-        avg_vol_20 = df["Volume"].rolling(20).mean().iloc[-2]
-        
-        distribution = (
-            latest["Close"] < latest["Open"] and
-            latest["Volume"] > avg_vol_20 * 1.5
-        )
-        upper_shadow = latest["High"] - max(latest["Open"], latest["Close"])
-        body = abs(latest["Close"] - latest["Open"])
-        
-        if upper_shadow > body * 1.5 and latest["Volume"] > avg_vol_20 * 1.5:
-            return None
-        if distribution:
-            return None
-    
-        yesterday_close = df["Close"].iloc[-2]
-        today_open = df["Open"].iloc[-1]
-
-        
-        gap_pct = ((today_open - yesterday_close) / yesterday_close) * 100
-        
-        if gap_pct > 5 and latest["Close"] < latest["High"]:
-            return None
         # =============================
-        # DAILY CHANGE
+        # % CHANGE HARIAN
         # =============================
         change_pct = round(
             ((df["Close"].iloc[-1] - df["Close"].iloc[-2])
             / df["Close"].iloc[-2]) * 100, 2
         )
-
-        if change_pct > 15:
+        if change_pct >= 19.5:
             return None
+        # =============================
+        # ACCUMULATION / DISTRIBUTION %
+        # =============================
+        df["MF Multiplier"] = (
+            ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) /
+            (df["High"] - df["Low"])
+        ).replace([np.inf, -np.inf], 0).fillna(0)
 
+        df["MF Volume"] = df["MF Multiplier"] * df["Volume"]
+
+        mf_5 = df["MF Volume"].tail(5).sum()
+        vol_5 = df["Volume"].tail(5).sum()
+
+        akum_percent = round((mf_5 / vol_5) * 100, 2) if vol_5 > 0 else 0
+                # =============================
+        # SMART MONEY INDEX (PROXY)
+        # =============================
+        df["SMI Flow"] = (
+            (df["Close"] - df["Open"]) -
+            (df["Open"] - df["Low"])
+        )
+
+        smi_5 = df["SMI Flow"].tail(5).sum()
+
+        if smi_5 > 0:
+            smart_money_signal = "SMART_IN"
+        elif smi_5 < 0:
+            smart_money_signal = "SMART_OUT"
+        else:
+            smart_money_signal = "NEUTRAL"
+
+       # =============================
+        # HIDDEN ACCUMULATION DETECTION
+        # =============================
+        hidden_accumulation = False
+
+        if (
+            avg_vol_20 > 0 and
+            df["Volume"].iloc[-1] > avg_vol_20 * 1.3 and
+            latest_range < avg_range_20 * 0.8 and
+            df["Close"].iloc[-1] >= df["Close"].iloc[-2]
+        ):
+            hidden_accumulation = True
+
+
+        # =============================
+        # EARLY BREAKOUT DETECTION
+        # =============================
+        highest_20 = df["High"].rolling(20).max().iloc[-2]
+
+        near_breakout = (
+            df["Close"].iloc[-1] > highest_20 * 0.97 and  # lebih ketat
+            df["Close"].iloc[-1] < highest_20 and
+            smart_money_signal == "SMART_IN"
+        )
+        # =============================
+        # EXPLOSIVE DETECTION (ARA candidate)
+        # =============================
         explosive = (
-            change_pct >= 12 and
-            df["Volume"].iloc[-1] > avg_vol_20 * 1.8
+            change_pct >= 15 and
+            df["Volume"].iloc[-1] > avg_vol_20 * 2
         )
+        if (
+            avg_vol_20 > 0 and
+            df["Volume"].iloc[-1] > avg_vol_20 * 2 and
+            latest_range < avg_range_20 * 0.7 and
+            df["Close"].iloc[-1] >= df["Close"].iloc[-2]
+        ):
+            hidden_accumulation = True
 
-        continuation = (
-            5 <= change_pct < 12 and
-            df["Volume"].iloc[-1] > avg_vol_20 * 1.3
-        )
+        # =============================
+        # SMART MONEY BONUS SCORE
+        # =============================
+        smart_score = 0
+
+        if akum_percent > 10:
+            smart_score += 5
+
+        if smart_money_signal == "SMART_IN":
+            smart_score += 5
+
+        if hidden_accumulation:
+            smart_score += 10
+
+        if near_breakout:
+            smart_score += 15  # early signal besar
+
+        final_score = score + smart_score
+
+           # HARD FILTER MARKET CAP
 
         return {
             "Code": code,
-            "Moon Score": score,
-            "Last Price": float(latest_close),
+            "Moon Score": final_score,
+            "Smart Bonus": smart_score,
+            "Last Price": float(df["Close"].iloc[-1]),
             "Change (%)": change_pct,
-            "Value_raw": int(value_traded),
-            "Volume_raw": int(df["Volume"].iloc[-1]),
-            "ATR_percent": float(round(atr_percent, 2)),
+            "Akum/Dis (%)": akum_percent,
+            "Smart Money": smart_money_signal,
+            "H.Acum": hidden_accumulation,
+            "Near BO": near_breakout,
             "Explosive": explosive,
-            "Continuation": continuation
+            "Volume": int(df["Volume"].iloc[-1]),
+            "Market Cap": market_cap
         }
 
-    except Exception:
+    except:
         return None
 
 def format_number(num):
