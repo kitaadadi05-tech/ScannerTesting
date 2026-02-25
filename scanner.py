@@ -88,6 +88,7 @@ def calculate_moon_score(df):
         return 0
 
     if isinstance(df.columns, pd.MultiIndex):
+        
         df.columns = df.columns.get_level_values(0)
 
     df = df.dropna().copy()
@@ -154,7 +155,7 @@ def scan_stock(row):
             auto_adjust=False,
             progress=False
         )
-
+        df = df.reset_index(drop=True)
         if df.empty or len(df) < 40:
             return None
 
