@@ -15,6 +15,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from datetime import datetime
 import pytz
 import holidays
+import os
 
 # =========================================================
 # CONFIG
@@ -27,29 +28,15 @@ MAX_DAILY_ATR_PERCENT = 12
 # =========================================================
 # TELEGRAM CONFIG
 # =========================================================
-TELEGRAM_TOKEN = "8448726069:AAHNbMoAN4dsDsoVA1WvTapmkZ2ma2PpO_k"
-TELEGRAM_CHAT_ID = "1115652607"
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # =========================================================
 # LOAD EMITEN
 # =========================================================
-emiten = pd.read_csv("/content/drive/MyDrive/emiten2.csv")
+emiten = pd.read_csv("emiten2.csv")
 emiten["code"] = emiten["code"].astype(str).str.strip()
 
-
-def is_market_open():
-    tz = pytz.timezone("Asia/Jakarta")
-    today = datetime.now(tz).date()
-
-    # Weekend
-    if today.weekday() >= 5:
-        return False
-
-    # Libur nasional Indonesia
-    id_holidays = holidays.Indonesia()
-    if today in id_holidays:
-        return False
-
-    return True
 # =========================================================
 # SCORING FUNCTION
 # =========================================================
