@@ -37,7 +37,7 @@ MIN_AVG_VOLUME = 5_000_000          # wajib rame
 MIN_VALUE_TRADED = 20_000_000_000   # minimal 20M nilai transaksi
 VOLUME_SPIKE_MULTIPLIER = 1.5
 PERIOD = "6mo"
-MAX_DAILY_ATR_PERCENT = 8
+MAX_DAILY_ATR_PERCENT = 12
 # =========================================================
 # TELEGRAM CONFIG
 # =========================================================
