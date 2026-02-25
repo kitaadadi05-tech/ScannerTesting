@@ -25,7 +25,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-
+from concurrent.futures import ThreadPoolExecutor
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
@@ -338,12 +338,11 @@ async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """)).fetchone()
 
     if stats.total == 0:
-        await update.message.reply_text("Belum ada statistik.")
-        return
+        message = "Belum ada statistik."
+    else:
+        winrate = round((stats.win / stats.total) * 100, 2)
 
-    winrate = round((stats.win / stats.total) * 100, 2)
-
-    message = f"""
+        message = f"""
 📊 MOMENTUM STATISTICS
 
 Total Signal : {stats.total}
@@ -356,7 +355,11 @@ Best         : {stats.best}%
 Worst        : {stats.worst}%
 """
 
-    await update.message.reply_text(message)
+    # Support command & button
+    if update.message:
+        await update.message.reply_text(message)
+    else:
+        await update.callback_query.edit_message_text(message)
 # =========================================================
 # MULTIPROCESS EXECUTION + SCHEDULER (RAILWAY READY)
 # =========================================================
@@ -375,8 +378,8 @@ def run_eod_scan():
 
     print("🚀 Running EOD Scan...")
 
-    with mp.Pool(4) as pool:
-        results = pool.map(scan_stock, emiten.to_dict("records"))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(scan_stock, emiten.to_dict("records")))
 
     results = [r for r in results if r]
 
@@ -485,7 +488,8 @@ def dashboard_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-
+last_result_message = "Belum ada hasil scan."
+scheduler_active = True
 # =============================
 # COMMAND HANDLER
 # =============================
@@ -575,19 +579,28 @@ async def run_scan_async(target, aggressive=False):
         df = pd.DataFrame(results)
         df = df.sort_values(by="Moon Score", ascending=False).head(5)
 
-        message = "<b>🚀 MANUAL SCAN RESULT</b>\n\n<pre>"
-        message += "CODE | PRICE | CHG% | SCR\n"
-        message += "-" * 30 + "\n"
+       html = "<b>🚀MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
+    html += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
+    html += "-" * 55 + "\n"
 
-        for _, row in df.iterrows():
-            message += (
-                f"{row['Code']} | "
-                f"{int(row['Last Price'])} | "
-                f"{row['Change (%)']}% | "
-                f"{row['Moon Score']}\n"
-            )
+    for _, row in df.iterrows():
+        html += (
+            f"{row['Code']:<4} | "
+            f"{int(row['Last Price']):>6} | "
+            f"{row['Change (%)']:>5.2f}% | "
+            f"{format_number(row['Value_raw']):>6} | "
+            f"{format_number(row['Volume_raw']):>6} | "
+            f"{row['Moon Score']:>3} | "
+            f"{row['Category']}\n"
+        )
 
-        message += "</pre>"
+    html += "</pre>\n"
+    html += "<b>Legend:</b>\n"
+    html += "🚀 = Strong Momentum\n"
+    html += "🔥 = Continuation T+1\n"
+    html += "⚡ = Early Momentum\n"
+    
+
 
     last_result_message = message
 
