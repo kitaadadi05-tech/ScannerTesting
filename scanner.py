@@ -37,7 +37,7 @@ MIN_AVG_VOLUME = 5_000_000          # wajib rame
 MIN_VALUE_TRADED = 20_000_000_000   # minimal 20M nilai transaksi
 VOLUME_SPIKE_MULTIPLIER = 1.5
 PERIOD = "6mo"
-MAX_DAILY_ATR_PERCENT = 12
+MAX_DAILY_ATR_PERCENT = 8
 # =========================================================
 # TELEGRAM CONFIG
 # =========================================================
@@ -50,6 +50,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 emiten = pd.read_csv("emiten2.csv")
 emiten["code"] = emiten["code"].astype(str).str.strip()
 
+def get_ihsg_data():
+    return yf.download("^JKSE", period=PERIOD, interval="1d", progress=False)
+    
 def init_db():
     with engine.connect() as conn:
         conn.execute(text("""
@@ -66,10 +69,18 @@ def init_db():
             atr_percent NUMERIC,
             result VARCHAR(10),
             return_pct NUMERIC,
+            r_multiple NUMERIC,
+            equity_after NUMERIC,
             evaluated BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """))
+
+        conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS unique_signal
+        ON signals(signal_date, code);
+        """))
+
         conn.commit()
 # =========================================================
 # SCORING FUNCTION
@@ -133,7 +144,7 @@ def calculate_moon_score(df):
 # =========================================================
 # WORKER FUNCTION
 # =========================================================
-def scan_stock(row):
+def scan_stock(row, aggressive=False):
 
     code = row["code"]
     ticker = code + ".JK"
@@ -162,6 +173,22 @@ def scan_stock(row):
         if score < 30:
             return None
 
+        ihsg = get_ihsg_data()
+        if ihsg.empty:
+            return None
+        
+        lookback = 10
+        stock_return = (df["Close"].iloc[-1] / df["Close"].iloc[-lookback]) - 1
+        ihsg_return = (ihsg["Close"].iloc[-1] / ihsg["Close"].iloc[-lookback]) - 1
+        
+        relative_strength = stock_return - ihsg_return
+        ihsg["EMA20"] = EMAIndicator(ihsg["Close"], 20).ema_indicator()
+
+        if ihsg["Close"].iloc[-1] < ihsg["EMA20"].iloc[-1]:
+            print("Market bearish, skip scan")
+            return
+        if relative_strength < 0:
+            return None
         # =============================
         # ANTI GORENGAN FILTER
         # =============================
@@ -188,6 +215,29 @@ def scan_stock(row):
         if value_traded < MIN_VALUE_TRADED:
             return None
 
+        latest = df.iloc[-1]
+        avg_vol_20 = df["Volume"].rolling(20).mean().iloc[-2]
+        
+        distribution = (
+            latest["Close"] < latest["Open"] and
+            latest["Volume"] > avg_vol_20 * 1.5
+        )
+        upper_shadow = latest["High"] - max(latest["Open"], latest["Close"])
+        body = abs(latest["Close"] - latest["Open"])
+        
+        if upper_shadow > body * 1.5 and latest["Volume"] > avg_vol_20 * 1.5:
+            return None
+        if distribution:
+            return None
+    
+        yesterday_close = df["Close"].iloc[-2]
+        today_open = df["Open"].iloc[-1]
+
+        
+        gap_pct = ((today_open - yesterday_close) / yesterday_close) * 100
+        
+        if gap_pct > 5 and latest["Close"] < latest["High"]:
+            return None
         # =============================
         # DAILY CHANGE
         # =============================
@@ -275,6 +325,15 @@ def evaluate_signals():
             WHERE evaluated = FALSE
         """)).fetchall()
 
+        last_equity = conn.execute(text("""
+            SELECT equity_after FROM signals
+            WHERE evaluated = TRUE
+            ORDER BY id DESC
+            LIMIT 1
+        """)).fetchone()
+        
+        equity = last_equity[0] if last_equity else 100_000_000
+
         for row in rows:
 
             ticker = row.code + ".JK"
@@ -295,28 +354,44 @@ def evaluate_signals():
 
             entry = float(row.entry_price)
 
-            tp_price = entry * 1.03
-            sl_price = entry * 0.97
+            atr_percent = float(row.atr_percent)
+            risk_pct = atr_percent * 1.2
+            reward_pct = risk_pct * 1.5
+            
+            tp_price = entry * (1 + reward_pct / 100)
+            sl_price = entry * (1 - risk_pct / 100)
 
             result = "FLAT"
             return_pct = 0
+            r_multiple = 0
 
-            if high >= tp_price:
+            # Conservative logic
+            if high >= tp_price and low <= sl_price:
+                result = "AMBIGUOUS"
+                return_pct = -3
+                r_multiple = -1
+            elif high >= tp_price:
                 result = "WIN"
                 return_pct = 3
+                r_multiple = 1
             elif low <= sl_price:
                 result = "LOSS"
-                return_pct = -3
+
+            equity *= (1 + return_pct / 100)
 
             conn.execute(text("""
                 UPDATE signals
                 SET result = :result,
                     return_pct = :return_pct,
+                    r_multiple = :r_multiple,
+                    equity_after = :equity,
                     evaluated = TRUE
                 WHERE id = :id
             """), {
                 "result": result,
                 "return_pct": return_pct,
+                "r_multiple": r_multiple,
+                "equity": equity,
                 "id": row.id
             })
 
@@ -365,9 +440,9 @@ Worst        : {stats.worst}%
 # =========================================================
 
 def run_eod_scan():
-
+    ihsg_data = get_ihsg_data()
     global scheduler_active
-
+    
     if not scheduler_active:
         print("⏸ Scheduler paused.")
         return
@@ -414,7 +489,8 @@ def run_eod_scan():
                     :category, :mode, :volume, :value_traded,
                     :atr_percent
                 )
-            """), {
+                ON CONFLICT (signal_date, code) DO NOTHING
+            """),  {
                 "code": row["Code"],
                 "entry_price": row["Last Price"],
                 "score": row["Moon Score"],
@@ -455,22 +531,7 @@ def run_eod_scan():
     tz = pytz.timezone("Asia/Jakarta")
 
     print("⏰ Scheduler aktif. Menunggu jam 15:05 WIB...")
-
-    background_scheduler.add_job(
-        run_eod_scan,
-        trigger='cron',
-        day_of_week='mon-fri',
-        hour=15,
-        minute=5
-    )
     
-    background_scheduler.add_job(
-        evaluate_signals,
-        trigger='cron',
-        hour=18,
-        minute=0
-    )
-
 # =============================
 # DASHBOARD UI
 # =============================
@@ -542,6 +603,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏸ Scheduler paused.")
 
     elif query.data == "resume":
+        global scheduler_active
         scheduler_active = True
         await query.edit_message_text("▶ Scheduler resumed.")
         
@@ -561,7 +623,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ASYNC SCAN WRAPPER
 # =============================
 async def run_scan_async(target, aggressive=False):
-
+    ihsg_data = get_ihsg_data()
     global last_result_message
 
     with ThreadPoolExecutor(max_workers=4) as executor:
