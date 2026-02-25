@@ -421,7 +421,7 @@ Worst        : {stats.worst}%
 # =========================================================
 
 def run_eod_scan():
-    ihsg_data = get_ihsg_data()
+
     global scheduler_active
     
     if not scheduler_active:
@@ -598,7 +598,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ASYNC SCAN WRAPPER
 # =============================
 async def run_scan_async(target):
-    ihsg_data = get_ihsg_data()
+
     global last_result_message
 
     with ThreadPoolExecutor(max_workers=4) as executor:
