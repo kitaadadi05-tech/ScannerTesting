@@ -18,6 +18,14 @@ import holidays
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
@@ -314,13 +322,6 @@ def evaluate_signals():
 
         conn.commit()
 
-background_scheduler.add_job(
-    evaluate_signals,
-    trigger='cron',
-    hour=18,
-    minute=0
-)
-
 async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with engine.connect() as conn:
@@ -467,28 +468,6 @@ def run_eod_scan():
         minute=0
     )
 
-# =========================================================
-# TELEGRAM DASHBOARD (ASYNC MODE)
-# =========================================================
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
-
-scheduler_active = True
-last_result_message = "Belum ada hasil scan."
-tz = pytz.timezone("Asia/Jakarta")
-
-background_scheduler = BackgroundScheduler(timezone=tz)
-background_scheduler.start()
-
-scheduler_active = True
-
-
 # =============================
 # DASHBOARD UI
 # =============================
@@ -621,10 +600,33 @@ async def run_scan_async(target, aggressive=False):
 # =========================================================
 # MAIN BOT START
 # =========================================================
-
 if __name__ == "__main__":
 
+    tz = pytz.timezone("Asia/Jakarta")
+
+    background_scheduler = BackgroundScheduler(timezone=tz)
+    background_scheduler.start()
+
+    # EOD Scan 15:05 WIB
+    background_scheduler.add_job(
+        run_eod_scan,
+        trigger='cron',
+        day_of_week='mon-fri',
+        hour=15,
+        minute=5
+    )
+
+    # Evaluasi 18:00 WIB
+    background_scheduler.add_job(
+        evaluate_signals,
+        trigger='cron',
+        day_of_week='mon-fri',
+        hour=18,
+        minute=0
+    )
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
     app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan_command))
@@ -632,6 +634,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("resume", resume_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(button_handler))
+
     init_db()
+
     print("🤖 Dashboard bot running...")
     app.run_polling()
