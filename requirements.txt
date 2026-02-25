@@ -6,6 +6,7 @@ requests
 apscheduler
 pytz
 holidays
+Python 3.11
 python-telegram-bot==20.7
 psycopg2-binary
 sqlalchemy
