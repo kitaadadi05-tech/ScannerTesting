@@ -564,61 +564,56 @@ async def run_scan_async(target, aggressive=False):
 
     global last_result_message
 
-    loop = context = None
-
-    MAX_WORKERS = 4
-
-    with mp.Pool(MAX_WORKERS) as pool:
-        results = pool.map(scan_stock, emiten.to_dict("records"))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(scan_stock, emiten.to_dict("records")))
 
     results = [r for r in results if r]
 
-    if len(results) == 0:
+    if not results:
         message = "📉 Tidak ada saham memenuhi kriteria."
     else:
         df = pd.DataFrame(results)
-        df = df.sort_values(by="Moon Score", ascending=False).head(5)
-        
-def categorize(row):
-    if row.get("Explosive"):
-        return "🚀"
-    elif row.get("Continuation"):
-        return "🔥"
-    return "⚡"
 
-    df["Category"] = df.apply(categorize, axis=1)
+        # Categorize
+        def categorize(row):
+            if row.get("Explosive"):
+                return "🚀"
+            elif row.get("Continuation"):
+                return "🔥"
+            return "⚡"
 
-    html = "<b>🚀MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
-    html += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
-    html += "-" * 55 + "\n"
+        df["Category"] = df.apply(categorize, axis=1)
 
-    for _, row in df.iterrows():
-        html += (
-            f"{row['Code']:<4} | "
-            f"{int(row['Last Price']):>6} | "
-            f"{row['Change (%)']:>5.2f}% | "
-            f"{format_number(row['Value_raw']):>6} | "
-            f"{format_number(row['Volume_raw']):>6} | "
-            f"{row['Moon Score']:>3} | "
-            f"{row['Category']}\n"
-        )
+        df = df.sort_values("Moon Score", ascending=False).head(5).reset_index(drop=True)
 
-    html += "</pre>\n"
-    html += "<b>Legend:</b>\n"
-    html += "🚀 = Strong Momentum\n"
-    html += "🔥 = Continuation T+1\n"
-    html += "⚡ = Early Momentum\n"
-    
+        message = "<b>🚀 MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
+        message += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
+        message += "-" * 55 + "\n"
 
+        for _, row in df.iterrows():
+            message += (
+                f"{row['Code']:<4} | "
+                f"{int(row['Last Price']):>6} | "
+                f"{row['Change (%)']:>5.2f}% | "
+                f"{format_number(row['Value_raw']):>6} | "
+                f"{format_number(row['Volume_raw']):>6} | "
+                f"{row['Moon Score']:>3} | "
+                f"{row['Category']}\n"
+            )
+
+        message += "</pre>\n"
+        message += "<b>Legend:</b>\n"
+        message += "🚀 = Strong Momentum\n"
+        message += "🔥 = Continuation T+1\n"
+        message += "⚡ = Early Momentum\n"
 
     last_result_message = message
 
-    if hasattr(target, "message"):
+    # Support command & button
+    if hasattr(target, "message") and target.message:
         await target.message.reply_text(message, parse_mode="HTML")
     else:
         await target.edit_message_text(message, parse_mode="HTML")
-
-
 # =========================================================
 # MAIN BOT START
 # =========================================================
