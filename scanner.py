@@ -50,9 +50,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 emiten = pd.read_csv("emiten2.csv")
 emiten["code"] = emiten["code"].astype(str).str.strip()
 
-def get_ihsg_data():
-    return yf.download("^JKSE", period=PERIOD, interval="1d", progress=False)
-    
 def init_db():
     with engine.connect() as conn:
         conn.execute(text("""
@@ -144,7 +141,7 @@ def calculate_moon_score(df):
 # =========================================================
 # WORKER FUNCTION
 # =========================================================
-def scan_stock(row, aggressive=False):
+def scan_stock(row):
 
     code = row["code"]
     ticker = code + ".JK"
@@ -173,22 +170,6 @@ def scan_stock(row, aggressive=False):
         if score < 30:
             return None
 
-        ihsg = get_ihsg_data()
-        if ihsg.empty:
-            return None
-        
-        lookback = 10
-        stock_return = (df["Close"].iloc[-1] / df["Close"].iloc[-lookback]) - 1
-        ihsg_return = (ihsg["Close"].iloc[-1] / ihsg["Close"].iloc[-lookback]) - 1
-        
-        relative_strength = stock_return - ihsg_return
-        ihsg["EMA20"] = EMAIndicator(ihsg["Close"], 20).ema_indicator()
-
-        if ihsg["Close"].iloc[-1] < ihsg["EMA20"].iloc[-1]:
-            print("Market bearish, skip scan")
-            return
-        if relative_strength < 0:
-            return None
         # =============================
         # ANTI GORENGAN FILTER
         # =============================
@@ -539,7 +520,6 @@ def dashboard_keyboard():
     keyboard = [
         [InlineKeyboardButton("🔎 Scan Now", callback_data="scan_now")],
         [InlineKeyboardButton("📊 Last Result", callback_data="last_result")],
-        [InlineKeyboardButton("📈 Aggressive Mode", callback_data="aggressive")],
         [InlineKeyboardButton("📈 Statistik", callback_data="stats")],
         [
             InlineKeyboardButton("⏸ Pause Scheduler", callback_data="pause"),
@@ -613,15 +593,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "🟢 Active" if scheduler_active else "🔴 Paused"
         await query.edit_message_text(f"Scheduler Status: {status}")
 
-    elif query.data == "aggressive":
-        await query.edit_message_text("📈 Aggressive mode scan dimulai...")
-        await run_scan_async(query, aggressive=True)
-
 
 # =============================
 # ASYNC SCAN WRAPPER
 # =============================
-async def run_scan_async(target, aggressive=False):
+async def run_scan_async(target):
     ihsg_data = get_ihsg_data()
     global last_result_message
 
