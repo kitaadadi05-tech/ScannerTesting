@@ -1,12 +1,11 @@
-pandas
-numpy
+python-telegram-bot==21.6
+apscheduler
 yfinance
 ta
-requests
-apscheduler
-pytz
-holidays
-Python 3.11
-python-telegram-bot>=21.0
-psycopg2-binary
 sqlalchemy
+psycopg2-binary
+holidays
+pytz
+pandas
+numpy
+requests
