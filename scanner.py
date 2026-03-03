@@ -574,49 +574,51 @@ def run_eod_scan():
 
     results = [r for r in results if r]
 
-# =============================
-# FALLBACK MODE (Jika kosong)
-# =============================
-if not results:
+    # =============================
+    # FALLBACK MODE
+    # =============================
+    if not results:
 
-    print("⚠ Tidak lolos filter, ambil top liquidity saja")
+        print("⚠ Tidak lolos filter, ambil top liquidity saja")
 
-    liquidity_pool = []
+        liquidity_pool = []
 
-    for row in emiten.to_dict("records"):
-        try:
-            df = yf.download(row["code"] + ".JK", period="1mo", progress=False)
+        for row in emiten.to_dict("records"):
+            try:
+                df = yf.download(row["code"] + ".JK", period="1mo", progress=False)
 
-            if df.empty or len(df) < 5:
-                continue
+                if df.empty or len(df) < 5:
+                    continue
 
-            latest = df.iloc[-1]
+                latest = df.iloc[-1]
+                value = latest["Close"] * latest["Volume"]
 
-            value = latest["Close"] * latest["Volume"]
+                liquidity_pool.append({
+                    "Code": row["code"],
+                    "Moon Score": 10,
+                    "AI Score": 10,
+                    "Last Price": float(latest["Close"]),
+                    "Change (%)": 0,
+                    "Value_raw": int(value),
+                    "Volume_raw": int(latest["Volume"]),
+                    "ATR_percent": 5,
+                    "Explosive": False,
+                    "Near BO": False,
+                    "H.Acum": False
+                })
 
-            liquidity_pool.append({
-                "Code": row["code"],
-                "Moon Score": 10,
-                "AI Score": 10,
-                "Last Price": float(latest["Close"]),
-                "Change (%)": 0,
-                "Value_raw": int(value),
-                "Volume_raw": int(latest["Volume"]),
-                "ATR_percent": 5,
-                "Explosive": False,
-                "Near BO": False,
-                "H.Acum": False
-            })
+            except Exception as e:
+                print(f"Fallback error {row['code']}: {e}")
 
-        except Exception as e:
-            print(f"Fallback error {row['code']}: {e}")
+        results = sorted(
+            liquidity_pool,
+            key=lambda x: x["Value_raw"],
+            reverse=True
+        )[:5]
 
-    results = sorted(
-        liquidity_pool,
-        key=lambda x: x["Value_raw"],
-        reverse=True
-    )[:5]
-
+    # =============================
+    # LANJUT PROSES NORMAL
+    # =============================
     df = pd.DataFrame(results)
 
     # Categorize
