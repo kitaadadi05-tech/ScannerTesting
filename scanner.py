@@ -574,8 +574,11 @@ def run_eod_scan():
 
     print("🚀 Running EOD Scan...")
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(scan_stock, emiten.to_dict("records")))
+    results = []
+    for row in emiten.to_dict("records"):
+        r = scan_stock(row)
+        if r:
+            results.append(r)
 
     results = [r for r in results if r]
 
