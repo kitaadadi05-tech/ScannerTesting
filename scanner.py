@@ -38,7 +38,8 @@ MIN_VALUE_TRADED = 20_000_000_000   # minimal 20M nilai transaksi
 VOLUME_SPIKE_MULTIPLIER = 1.2
 PERIOD = "6mo"
 MAX_DAILY_ATR_PERCENT = 18
-MIN_MARKET_CAP = 100_000_000_000  # misal 100M
+MIN_MARKET_CAP = 10_000_000_000  # misal 100M
+MIN_SCORE_THRESHOLD = 30
 # =========================================================
 # TELEGRAM CONFIG
 # =========================================================
@@ -572,30 +573,49 @@ def run_eod_scan():
         results = list(executor.map(scan_stock, emiten.to_dict("records")))
 
     results = [r for r in results if r]
-    # Fallback jika terlalu sepi
-    if not results:
+
+# =============================
+# FALLBACK MODE (Jika kosong)
+# =============================
+if not results:
+
     print("⚠ Tidak lolos filter, ambil top liquidity saja")
 
     liquidity_pool = []
+
     for row in emiten.to_dict("records"):
         try:
             df = yf.download(row["code"] + ".JK", period="1mo", progress=False)
-            if not df.empty:
-                latest = df.iloc[-1]
-                value = latest["Close"] * latest["Volume"]
-                liquidity_pool.append({
-                    "Code": row["code"],
-                    "Moon Score": 10,
-                    "Last Price": latest["Close"],
-                    "Change (%)": 0,
-                    "Value_raw": value,
-                    "Volume_raw": latest["Volume"],
-                    "Category": "⚡"
-                })
-        except:
-            pass
 
-    results = sorted(liquidity_pool, key=lambda x: x["Value_raw"], reverse=True)[:5]
+            if df.empty or len(df) < 5:
+                continue
+
+            latest = df.iloc[-1]
+
+            value = latest["Close"] * latest["Volume"]
+
+            liquidity_pool.append({
+                "Code": row["code"],
+                "Moon Score": 10,
+                "AI Score": 10,
+                "Last Price": float(latest["Close"]),
+                "Change (%)": 0,
+                "Value_raw": int(value),
+                "Volume_raw": int(latest["Volume"]),
+                "ATR_percent": 5,
+                "Explosive": False,
+                "Near BO": False,
+                "H.Acum": False
+            })
+
+        except Exception as e:
+            print(f"Fallback error {row['code']}: {e}")
+
+    results = sorted(
+        liquidity_pool,
+        key=lambda x: x["Value_raw"],
+        reverse=True
+    )[:5]
 
     df = pd.DataFrame(results)
 
