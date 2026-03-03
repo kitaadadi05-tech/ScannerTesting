@@ -35,9 +35,10 @@ Session = sessionmaker(bind=engine)
 # =========================================================
 MIN_AVG_VOLUME = 5_000_000          # wajib rame
 MIN_VALUE_TRADED = 20_000_000_000   # minimal 20M nilai transaksi
-VOLUME_SPIKE_MULTIPLIER = 1.5
+VOLUME_SPIKE_MULTIPLIER = 1.2
 PERIOD = "6mo"
-MAX_DAILY_ATR_PERCENT = 12
+MAX_DAILY_ATR_PERCENT = 18
+MIN_MARKET_CAP = 100_000_000_000  # misal 100M
 # =========================================================
 # TELEGRAM CONFIG
 # =========================================================
@@ -138,7 +139,75 @@ def calculate_moon_score(df):
 
     return score
 
+def calculate_ai_hybrid_score(df, base_score):
 
+    df = df.copy()
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    close = df["Close"]
+
+    # =============================
+    # 1️⃣ TREND STRENGTH (EMA SLOPE)
+    # =============================
+    ema20 = EMAIndicator(close, 20).ema_indicator()
+    slope = (ema20.iloc[-1] - ema20.iloc[-5]) / ema20.iloc[-5]
+
+    trend_score = min(max(slope * 500, 0), 20)  # scale 0–20
+
+
+    # =============================
+    # 2️⃣ MOMENTUM ACCELERATION
+    # =============================
+    rsi = RSIIndicator(close, 14).rsi()
+    rsi_delta = rsi.iloc[-1] - rsi.iloc[-3]
+
+    momentum_score = min(max(rsi_delta * 2, 0), 20)
+
+
+    # =============================
+    # 3️⃣ VOLUME PRESSURE
+    # =============================
+    avg_vol = df["Volume"].rolling(20).mean().iloc[-2]
+    vol_ratio = latest["Volume"] / avg_vol if avg_vol > 0 else 0
+
+    volume_score = min(max((vol_ratio - 1) * 10, 0), 10)
+
+
+    # =============================
+    # 4️⃣ VOLATILITY STABILITY
+    # =============================
+    atr = AverageTrueRange(
+        df["High"], df["Low"], df["Close"], 14
+    ).average_true_range()
+
+    atr_pct = (atr.iloc[-1] / latest["Close"]) * 100
+
+    if 3 < atr_pct < 15:
+        volatility_score = 10
+    else:
+        volatility_score = 3
+
+
+    # =============================
+    # NORMALIZE BASE SCORE
+    # =============================
+    normalized_base = min(base_score, 60) * (40 / 60)
+
+
+    # =============================
+    # FINAL AI HYBRID SCORE
+    # =============================
+    ai_score = (
+        normalized_base +
+        trend_score +
+        momentum_score +
+        volume_score +
+        volatility_score
+    )
+
+    return round(ai_score, 2)
 # =========================================================
 # WORKER FUNCTION
 # =========================================================
@@ -146,11 +215,6 @@ def scan_stock(row):
 
     code = row["code"]
     ticker = code + ".JK"
-    try:
-        fast_info = yf.Ticker(ticker).fast_info
-        market_cap = fast_info.get("market_cap", 0)
-    except:
-        market_cap = 0
 
     try:
         df = yf.download(
@@ -161,54 +225,72 @@ def scan_stock(row):
             progress=False
         )
 
-        if df.empty or len(df) < 30:
+        if df.empty or len(df) < 40:
             return None
-        # Filter ARA (misal > 20%)
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        score = calculate_moon_score(df)
+        df = df.dropna().copy()
 
-        # HARD FILTER LIQUIDITY
+        # =============================
+        # BASIC METRICS
+        # =============================
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        latest_close = latest["Close"]
+        latest_high = latest["High"]
+        latest_low = latest["Low"]
+        latest_volume = latest["Volume"]
+
+        change_pct = round(
+            ((latest_close - prev["Close"]) / prev["Close"]) * 100, 2
+        )
+
         avg_vol_20 = df["Volume"].rolling(20).mean().iloc[-2]
+        latest_range = latest_high - latest_low
+        avg_range_20 = (df["High"] - df["Low"]).rolling(20).mean().iloc[-2]
 
+        value_traded = int(latest_close * latest_volume)
+
+        # =============================
+        # HARD LIQUIDITY FILTER
+        # =============================
         if avg_vol_20 < MIN_AVG_VOLUME:
             return None
 
-        if score < 40:
+        if value_traded < MIN_VALUE_TRADED:
             return None
 
-        if market_cap is None or market_cap < MIN_MARKET_CAP:
-           return None
+        # =============================
+        # BASE SCORE
+        # =============================
+        score = calculate_moon_score(df)
+
+        if score < MIN_SCORE_THRESHOLD:
+            return None
 
         # =============================
-        # VOLATILITY FILTER (ATR %)
+        # ATR FILTER (lebih longgar)
         # =============================
-        atr_indicator = AverageTrueRange(df["High"], df["Low"], df["Close"], 14)
+        atr_indicator = AverageTrueRange(
+            df["High"], df["Low"], df["Close"], 14
+        )
         df["ATR"] = atr_indicator.average_true_range()
 
         latest_atr = df["ATR"].iloc[-1]
-        latest_close = df["Close"].iloc[-1]
-
-        atr_percent = (latest_atr / latest_close) * 100
+        atr_percent = round((latest_atr / latest_close) * 100, 2)
 
         if atr_percent > MAX_DAILY_ATR_PERCENT:
             return None
+
         # =============================
-        # % CHANGE HARIAN
-        # =============================
-        change_pct = round(
-            ((df["Close"].iloc[-1] - df["Close"].iloc[-2])
-            / df["Close"].iloc[-2]) * 100, 2
-        )
-        if change_pct >= 19.5:
-            return None
-        # =============================
-        # ACCUMULATION / DISTRIBUTION %
+        # ACCUMULATION DETECTION
         # =============================
         df["MF Multiplier"] = (
-            ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) /
+            ((df["Close"] - df["Low"]) -
+             (df["High"] - df["Close"])) /
             (df["High"] - df["Low"])
         ).replace([np.inf, -np.inf], 0).fillna(0)
 
@@ -218,8 +300,9 @@ def scan_stock(row):
         vol_5 = df["Volume"].tail(5).sum()
 
         akum_percent = round((mf_5 / vol_5) * 100, 2) if vol_5 > 0 else 0
-                # =============================
-        # SMART MONEY INDEX (PROXY)
+
+        # =============================
+        # SMART MONEY PROXY
         # =============================
         df["SMI Flow"] = (
             (df["Close"] - df["Open"]) -
@@ -235,51 +318,40 @@ def scan_stock(row):
         else:
             smart_money_signal = "NEUTRAL"
 
-       # =============================
-        # HIDDEN ACCUMULATION DETECTION
         # =============================
-        hidden_accumulation = False
-
-        if (
+        # HIDDEN ACCUMULATION
+        # =============================
+        hidden_accumulation = (
             avg_vol_20 > 0 and
-            df["Volume"].iloc[-1] > avg_vol_20 * 1.3 and
-            latest_range < avg_range_20 * 0.8 and
-            df["Close"].iloc[-1] >= df["Close"].iloc[-2]
-        ):
-            hidden_accumulation = True
-
+            latest_volume > avg_vol_20 * 1.2 and
+            latest_range < avg_range_20 * 0.9 and
+            latest_close >= prev["Close"]
+        )
 
         # =============================
-        # EARLY BREAKOUT DETECTION
+        # NEAR BREAKOUT (AGGRESSIVE)
         # =============================
         highest_20 = df["High"].rolling(20).max().iloc[-2]
 
         near_breakout = (
-            df["Close"].iloc[-1] > highest_20 * 0.97 and  # lebih ketat
-            df["Close"].iloc[-1] < highest_20 and
-            smart_money_signal == "SMART_IN"
+            latest_close > highest_20 * 0.95 and
+            latest_close <= highest_20
         )
-        # =============================
-        # EXPLOSIVE DETECTION (ARA candidate)
-        # =============================
-        explosive = (
-            change_pct >= 15 and
-            df["Volume"].iloc[-1] > avg_vol_20 * 2
-        )
-        if (
-            avg_vol_20 > 0 and
-            df["Volume"].iloc[-1] > avg_vol_20 * 2 and
-            latest_range < avg_range_20 * 0.7 and
-            df["Close"].iloc[-1] >= df["Close"].iloc[-2]
-        ):
-            hidden_accumulation = True
 
         # =============================
-        # SMART MONEY BONUS SCORE
+        # EXPLOSIVE MOVE
+        # =============================
+        explosive = (
+            change_pct >= 10 and
+            latest_volume > avg_vol_20 * 1.5
+        )
+
+        # =============================
+        # SMART BONUS
         # =============================
         smart_score = 0
 
-        if akum_percent > 10:
+        if akum_percent > 5:
             smart_score += 5
 
         if smart_money_signal == "SMART_IN":
@@ -289,30 +361,34 @@ def scan_stock(row):
             smart_score += 10
 
         if near_breakout:
-            smart_score += 15  # early signal besar
+            smart_score += 10
 
-        final_score = score + smart_score
+        if explosive:
+            smart_score += 15
 
-           # HARD FILTER MARKET CAP
+        base_combined = score + smart_score
+        ai_score = calculate_ai_hybrid_score(df, base_combined)
 
         return {
             "Code": code,
-            "Moon Score": final_score,
-            "Smart Bonus": smart_score,
-            "Last Price": float(df["Close"].iloc[-1]),
+            "Moon Score": base_combined,
+            "AI Score": ai_score,
+            "Last Price": float(latest_close),
             "Change (%)": change_pct,
             "Akum/Dis (%)": akum_percent,
             "Smart Money": smart_money_signal,
             "H.Acum": hidden_accumulation,
             "Near BO": near_breakout,
             "Explosive": explosive,
-            "Volume": int(df["Volume"].iloc[-1]),
-            "Market Cap": market_cap
+            "Volume_raw": int(latest_volume),
+            "Value_raw": value_traded,
+            "ATR_percent": atr_percent
         }
 
-    except:
+    except Exception as e:
+        print(f"[ERROR] {code}: {e}")
         return None
-
+        
 def format_number(num):
     if num >= 1_000_000_000_000:
         return f"{num/1_000_000_000_000:.2f}T"
@@ -496,10 +572,30 @@ def run_eod_scan():
         results = list(executor.map(scan_stock, emiten.to_dict("records")))
 
     results = [r for r in results if r]
-
+    # Fallback jika terlalu sepi
     if not results:
-        send_telegram("📉 Tidak ada saham memenuhi kriteria hari ini.")
-        return
+    print("⚠ Tidak lolos filter, ambil top liquidity saja")
+
+    liquidity_pool = []
+    for row in emiten.to_dict("records"):
+        try:
+            df = yf.download(row["code"] + ".JK", period="1mo", progress=False)
+            if not df.empty:
+                latest = df.iloc[-1]
+                value = latest["Close"] * latest["Volume"]
+                liquidity_pool.append({
+                    "Code": row["code"],
+                    "Moon Score": 10,
+                    "Last Price": latest["Close"],
+                    "Change (%)": 0,
+                    "Value_raw": value,
+                    "Volume_raw": latest["Volume"],
+                    "Category": "⚡"
+                })
+        except:
+            pass
+
+    results = sorted(liquidity_pool, key=lambda x: x["Value_raw"], reverse=True)[:5]
 
     df = pd.DataFrame(results)
 
@@ -513,7 +609,7 @@ def run_eod_scan():
 
     df["Category"] = df.apply(categorize, axis=1)
 
-    df = df.sort_values("Moon Score", ascending=False).head(5).reset_index(drop=True)
+    df = df.sort_values("AI Score", ascending=False).head(5).reset_index(drop=True)
 
     # ================= SAVE TO DB =================
     with engine.connect() as conn:
@@ -553,7 +649,7 @@ def run_eod_scan():
             f"{row['Change (%)']:>5.2f}% | "
             f"{format_number(row['Value_raw']):>6} | "
             f"{format_number(row['Volume_raw']):>6} | "
-            f"{row['Moon Score']:>3} | "
+            f"{row['AI Score']:>3} | "
             f"{row['Category']}\n"
         )
 
@@ -679,7 +775,7 @@ async def run_scan_async(target):
 
         df["Category"] = df.apply(categorize, axis=1)
 
-        df = df.sort_values("Moon Score", ascending=False).head(5).reset_index(drop=True)
+        df = df.sort_values("AI Score", ascending=False).head(5).reset_index(drop=True)
 
         message = "<b>🚀 MANUAL SCALPING MOMENTUM</b>\n\n<pre>"
         message += "CODE | PRICE | CHG% | VALUE | VOL | SCR | CTG\n"
