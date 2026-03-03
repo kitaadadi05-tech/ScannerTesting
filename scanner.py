@@ -219,14 +219,19 @@ def scan_stock(row):
 
     try:
         df = yf.download(
-            ticker,
-            period=PERIOD,
-            interval="1d",
-            auto_adjust=False,
-            progress=False
-        )
-
+        ticker,
+        period=PERIOD,
+        interval="1d",
+        auto_adjust=False,
+        progress=False
+    )
+    
         if df.empty or len(df) < 40:
+            return None
+        
+        # 🔥 VALIDASI PENTING
+        if df["Close"].nunique() < 5:
+            print(f"[INVALID DATA] {code} suspicious identical close values")
             return None
 
         if isinstance(df.columns, pd.MultiIndex):
